@@ -1,0 +1,8 @@
+0_casco
+1_chaleco
+2_gafas
+3_buff
+4_pistola
+5_arma_principal
+6_botas
+7_uniforme_militar
