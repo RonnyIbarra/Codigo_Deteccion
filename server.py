@@ -191,6 +191,15 @@ def status():
         'inference': 'REAL con TFLite ✅'
     })
 
+# ¡¡CLAVE!! Cargar modelo al startup (para gunicorn en Railway)
+@app.before_request
+def load_model_on_startup():
+    """Cargar modelo la primera vez que se recibe una request"""
+    global interpreter
+    if interpreter is None:
+        print("🔄 Cargando modelo en primer request...")
+        load_tflite_model()
+
 if __name__ == '__main__':
     print("=" * 70)
     print("🚀 Servidor Flask con TensorFlow Lite REAL")
