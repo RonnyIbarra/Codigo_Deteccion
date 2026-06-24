@@ -5,12 +5,14 @@ Basado en: Proyecto_Interculturalidad_Pato
 """
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import io
 import os
 import numpy as np
 from PIL import Image
 
 app = Flask(__name__)
+CORS(app)  # ✅ Habilitar CORS para que la app Flutter pueda hacer requests
 
 # Variables globales
 interpreter = None
