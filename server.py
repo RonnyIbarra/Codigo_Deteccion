@@ -1,21 +1,16 @@
 """
-Servidor Flask con TensorFlow Lite REAL
-Descarga modelo de Firebase y ejecuta inferencia en tiempo real
+Servidor Flask con TensorFlow Lite REAL - INFERENCIA EN TIEMPO REAL
+Usa model_unquant.tflite con normalización correcta [-1, 1]
+Basado en: Proyecto_Interculturalidad_Pato
 """
 
 from flask import Flask, request, jsonify
-import requests
 import io
 import os
-import tempfile
 import numpy as np
 from PIL import Image
 
 app = Flask(__name__)
-
-# URLs de Firebase
-FIREBASE_MODEL_URL = "https://detector-equipo-seguridad.web.app/model.tflite"
-FIREBASE_LABELS_URL = "https://detector-equipo-seguridad.web.app/labels.txt"
 
 # Variables globales
 interpreter = None
@@ -23,53 +18,49 @@ input_details = None
 output_details = None
 labels = []
 model_path = None
+input_size = 224
 
 def load_tflite_model():
-    """Cargar modelo TFLite de Firebase"""
-    global interpreter, input_details, output_details, labels, model_path
+    """Cargar modelo TFLite SIN CUANTIZAR desde assets"""
+    global interpreter, input_details, output_details, labels, model_path, input_size
 
     try:
-        print("🔄 Descargando modelo de Firebase...")
+        print("🔄 Cargando modelo SIN CUANTIZAR...")
 
-        # Descargar modelo
-        response = requests.get(FIREBASE_MODEL_URL, timeout=30)
-        response.raise_for_status()
+        # Usar modelo SIN CUANTIZAR (model_unquant.tflite)
+        model_path = 'codigo_deteccion/assets/model_unquant.tflite'
 
-        # Guardar en temp
-        model_path = os.path.join(tempfile.gettempdir(), 'model.tflite')
-        with open(model_path, 'wb') as f:
-            f.write(response.content)
-
-        print(f"✓ Modelo descargado: {len(response.content)} bytes")
-
-        # Cargar intérprete
-        try:
-            import tflite_runtime.interpreter as tflite
-            interpreter = tflite.Interpreter(model_path=model_path)
-            print("✓ Usando tflite-runtime")
-        except ImportError:
-            print("⚠️  tflite-runtime no disponible, intentando tensorflow...")
-            try:
-                import tensorflow as tf
-                interpreter = tf.lite.Interpreter(model_path=model_path)
-                print("✓ Usando tensorflow.lite")
-            except ImportError:
-                print("✗ No hay librería TFLite disponible")
+        if not os.path.exists(model_path):
+            print(f"⚠️  model_unquant.tflite no encontrado, intentando model.tflite...")
+            model_path = 'codigo_deteccion/assets/model.tflite'
+            if not os.path.exists(model_path):
+                print(f"✗ Ningún modelo encontrado")
                 return False
 
+        print(f"✓ Modelo encontrado: {model_path}")
+
+        # Cargar intérprete
+        import tflite_runtime.interpreter as tflite
+        interpreter = tflite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
 
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
 
+        # Obtener tamaño de entrada (típicamente 224x224)
+        input_shape = input_details[0]['shape']
+        if len(input_shape) >= 2:
+            input_size = input_shape[1]
+
         print(f"✓ Modelo cargado correctamente")
         print(f"  Input shape: {input_details[0]['shape']}")
+        print(f"  Input dtype: {input_details[0]['dtype']}")
+        print(f"  Input size: {input_size}x{input_size}")
 
-        # Descargar labels
-        response = requests.get(FIREBASE_LABELS_URL, timeout=10)
-        response.raise_for_status()
-
-        labels = [line.strip() for line in response.text.split('\n') if line.strip()]
+        # Cargar labels locales
+        labels_path = 'codigo_deteccion/assets/labels.txt'
+        with open(labels_path, 'r') as f:
+            labels = [line.strip() for line in f if line.strip()]
 
         print(f"✓ Labels: {len(labels)} clases")
         for i, label in enumerate(labels):
@@ -78,31 +69,39 @@ def load_tflite_model():
         return True
     except Exception as e:
         print(f"✗ Error cargando modelo: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def preprocess_image(image_data):
-    """Preprocesar imagen para el modelo"""
+    """Preprocesar imagen EXACTAMENTE como Proyecto_Interculturalidad_Pato"""
     try:
         # Cargar imagen
         image = Image.open(io.BytesIO(image_data))
 
-        # Redimensionar
-        input_shape = input_details[0]['shape']
-        height, width = input_shape[1], input_shape[2]
+        # Convertir a RGB si es necesario
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
 
-        image = image.resize((width, height))
+        # Redimensionar a 224x224 (Teachable Machine estándar)
+        image = image.resize((input_size, input_size), Image.LANCZOS)
         image_array = np.array(image, dtype=np.float32)
 
-        # Normalizar
-        if np.max(image_array) > 1.0:
-            image_array = image_array / 255.0
+        # ¡¡CLAVE!! Normalizar a [-1, 1] como Teachable Machine
+        # NO dividir por 255, sino usar: (x / 127.5) - 1.0
+        image_array = (image_array / 127.5) - 1.0
 
-        # Agregar batch
+        # Agregar batch dimension [1, 224, 224, 3]
         image_array = np.expand_dims(image_array, axis=0)
+
+        print(f"✓ Imagen preprocesada: shape={image_array.shape}, dtype={image_array.dtype}")
+        print(f"  Min={image_array.min():.3f}, Max={image_array.max():.3f}")
 
         return image_array
     except Exception as e:
         print(f"✗ Error preprocesando: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def run_inference(image):
@@ -111,9 +110,17 @@ def run_inference(image):
         interpreter.set_tensor(input_details[0]['index'], image)
         interpreter.invoke()
         output = interpreter.get_tensor(output_details[0]['index'])
-        return output[0]
+
+        # output[0] tiene shape [1, num_classes]
+        predictions = output[0] if len(output.shape) == 2 else output
+
+        print(f"✓ Inferencia completada: {predictions.shape}")
+
+        return predictions
     except Exception as e:
         print(f"✗ Error en inferencia: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 @app.route('/health', methods=['GET'])
